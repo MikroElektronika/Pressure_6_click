@@ -1,0 +1,183 @@
+{
+Example for Cloud Click
+
+    Date          : okt 2018.
+    Author        : MikroE Team
+
+Test configuration FT90x :
+    
+    MCU                : FT900
+    Dev. Board         : EasyFT90x v7 
+    FT90x Compiler ver : v2.3.0.0
+
+---
+Description :
+
+The application is composed of three sections :
+
+- System Initialization - Initializes all necessary GPIO pins, UART used for
+the communcation with Cloud click.
+- Application Initialization - Initializes driver, power on module.
+Commands are sent to prepare the module for communication with the cloud.
+- Application Task - running in parallel core state machine and checks for the URC
+message from ClickCloud.
+
+Additional Functions :
+
+All additional functions such as timer initialization and default handler. 
+
+}
+program Click_Pressure6_FT90x;
+
+uses Click_Pressure6_types, Click_Pressure6_config, Click_Pressure6_timer;
+
+var 
+    //SENSOR remove if not used
+    pressure6_tempRef   : array[30] of char;
+	pressure6_presRef   : array[30] of char;
+    cloud_networkName     : array[20] of char;
+    cloud_networkPassword : array[20] of char; 
+    cloud_devKey          : array[50] of char;
+    cloud_devPass         : array[100] of char;
+    
+    // Commands
+    _ATE     : array[5] of char;
+    _AT      : array[3] of char;
+    _AT_CEN  : array[9] of char;
+    _AT_NWCR : array[8] of char; 
+    _AT_NWC  : array[9] of char;
+    _AT_BRCR : array[8] of char; 
+    _AT_BRC  : array[9] of char;
+    _AT_DSET : array[8] of char; 
+    _AT_PUB  : array[7] of char;
+    
+procedure cloud_default_handler(rsp : ^uint8_t; evArgs : ^uint8_t); 
+var
+    tmp : ^char;
+    
+begin
+
+    tmp := rsp;
+    mikrobus_logWrite(tmp, _LOG_TEXT);
+end;
+
+procedure cloud_packCmd(cmd : ^char; mid : ^char; _end : ^char);
+var
+    cmd_param : array[10] of char; 
+    mid_param : array[10] of char; 
+    end_param : array[10] of char; 
+    tmpBuf    : array[80] of char;
+begin
+    cmd_param := '="';
+    mid_param := '","';
+    end_param := '"';
+
+    memset(@tmpBuf[0], 0, 50); 
+    strcat(@tmpBuf[0], cmd); 
+    strcat(@tmpBuf[0], @cmd_param[0]); 
+    strcat(@tmpBuf[0], mid); 
+    strcat(@tmpBuf[0], @mid_param[0]); 
+    strcat(@tmpBuf[0], _end);
+    strcat(@tmpBuf[0], @end_param[0]); 
+    cloud_cmdSingle(@tmpBuf[0]); 
+end;
+
+procedure systemInit(); 
+begin
+// Cloud
+    mikrobus_gpioInit(_MIKROBUS1, _MIKROBUS_INT_PIN, _GPIO_INPUT); 
+    mikrobus_gpioInit(_MIKROBUS1, _MIKROBUS_RST_PIN, _GPIO_OUTPUT); 
+    mikrobus_gpioInit(_MIKROBUS1, _MIKROBUS_CS_PIN, _GPIO_OUTPUT); 
+    mikrobus_uartInit(_MIKROBUS1, @_CLOUD_UART_CFG[0]);
+
+    mikrobus_gpioInit(_MIKROBUS2, _MIKROBUS_INT_PIN, _GPIO_INPUT); 
+    mikrobus_i2cInit(_MIKROBUS2, @_PRESSURE6_I2C_CFG[0]); 
+	
+    mikrobus_logInit(_LOG_USBUART, 9600); 
+end;
+
+procedure applicationInit(); 
+begin
+// TIMER INIT
+    cloud_configTimer(); 
+
+// DRIVER INIT
+    cloud_uartDriverInit(T_CLOUD_P(@_MIKROBUS1_GPIO), T_CLOUD_P(@_MIKROBUS1_UART)); 
+    cloud_coreInit(@cloud_default_handler, 1500);
+    cloud_modulePower(true); 
+	
+	pressure6_i2cDriverInit(T_PRESSURE6_P(@_MIKROBUS2_GPIO), T_PRESSURE6_P(@_MIKROBUS2_I2C), _PRESSURE6_DEF_SLAVE_ADDRESS); 
+    pressure6_powerON(); 
+    Delay_1sec(); 
+    pressure6_writeByte(_PRESSURE6_REG_MODE_CONTROL, (((_PRESSURE6_MC_AVE_NUM_SINGLE or _PRESSURE6_MC_DATA_READY_ENABLED) or _PRESSURE6_MC_FULL_DATA_ENABLED) or _PRESSURE6_MC_WATER_MARK_ENABLED) or _PRESSURE6_MC_MODE_CONTINUOUS); 
+    
+
+// MODULE INIT
+    cloud_cmdSingle(@_ATE[0]); 
+    cloud_cmdSingle(@_AT[0]); 
+    cloud_cmdSingle(@_AT_CEN[0]); 
+    cloud_packCmd(@_AT_NWCR[0], @cloud_networkName[0], @cloud_networkPassword[0]); 
+    cloud_cmdSingle(@_AT_NWC[0]); 
+    cloud_packCmd(@_AT_BRCR[0], @cloud_devKey[0], @cloud_devPass[0]); 
+    cloud_cmdSingle(@_AT_BRC[0]); 
+    Delay_ms(3000); 
+    
+    taskTime := 0; 
+end;
+
+procedure applicationTask(); 
+var
+    demoBuffer : array[50] of char; 
+	Pressure : uint16_t; 
+    Temperature : uint8_t; 
+begin
+
+// CORE STATE MACHINE
+    cloud_process(); 
+
+// SENSOR - Remove if not used
+    if (taskTime > 1500) then 
+    begin
+        taskTime := 0; 
+		
+		pressure6_waitingForNewData(); 
+        Pressure := pressure6_getPressure(); 
+        Temperature := pressure6_getTemperatre(); 
+        
+		IntToStr(Pressure, demoBuffer); 
+		Ltrim(demoBuffer);
+        cloud_packCmd(@_AT_DSET[0], @pressure6_presRef[0], @demoBuffer[0]); 
+		
+		IntToStr(Temperature, demoBuffer); 
+		Ltrim(demoBuffer);
+        cloud_packCmd(@_AT_DSET[0], @pressure6_tempRef[0], @demoBuffer[0]); 
+		
+        cloud_cmdSingle(@_AT_PUB[0]); 
+    end; 
+     
+end;
+
+begin
+    pressure6_tempRef   := 'PRESSURE6_T';
+	pressure6_presRef   := 'PRESSURE6_P';
+    Cloud_networkName     := 'Network_Name';
+    Cloud_networkPassword := 'Network_Password';
+    Cloud_devKey          := 'Device_Key';
+    Cloud_devPass         := 'Device_Password';
+    _ATE                  := 'ATE1';
+    _AT                   := 'AT';
+    _AT_CEN               := 'AT+CEN=1';
+    _AT_NWCR              := 'AT+NWCR';
+    _AT_NWC               := 'AT+NWC=1';
+    _AT_BRCR              := 'AT+BRCR';
+    _AT_BRC               := 'AT+BRC=1';
+    _AT_DSET              := 'AT+DSET';
+    _AT_PUB               := 'AT+PUB';
+
+    systemInit(); 
+    applicationInit(); 
+    while (1) do 
+    begin 
+        applicationTask(); 
+    end;
+end.

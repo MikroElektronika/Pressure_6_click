@@ -1,0 +1,206 @@
+{
+Example for Cloud Click
+
+    Date          : okt 2018.
+    Author        : MikroE Team
+
+Test configuration TIVA :
+    
+    MCU              : TM4C129XNCZAD
+    Dev. Board       : EasyMx PRO v7 for TIVA ARM
+    ARM Compiler ver : v6.0.0.0
+
+---
+
+Description :
+
+The application is composed of three sections :
+
+- System Initialization - Initializes all necessary GPIO pins, UART used for
+the communcation with Cloud click.
+- Application Initialization - Initializes driver, power on module.
+Commands are sent to prepare the module for communication with the cloud.
+- Application Task - running in parallel core state machine and checks for the URC
+message from ClickCloud.
+
+Additional Functions :
+
+All additional functions such as timer initialization and default handler. 
+
+}
+program Click_Pressure6_TIVA;
+
+uses Click_Pressure6_types, Click_Pressure6_config, Click_Pressure6_timer;
+
+var
+    state : uint8_t;
+    oldstate : uint8_t;
+    
+    //SENSOR remove if not used
+    pressure6_ref   : array[30] of char;
+    cloud_networkName     : array[20] of char;
+    cloud_networkPassword : array[20] of char; 
+    cloud_devKey          : array[50] of char;
+    cloud_devPass         : array[100] of char;
+    
+    // Commands
+    _ATE     : array[5] of char;
+    _AT      : array[3] of char;
+    _AT_CEN  : array[9] of char;
+    _AT_NWCR : array[8] of char; 
+    _AT_NWC  : array[9] of char;
+    _AT_BRCR : array[8] of char; 
+    _AT_BRC  : array[9] of char;
+    _AT_DSET : array[8] of char; 
+    _AT_PUB  : array[7] of char;
+    
+procedure cloud_default_handler(rsp : ^uint8_t; evArgs : ^uint8_t); 
+var
+    cmd_act     : array[5] of char;
+    state_true  : array[5] of char;
+    state_false : array[6] of char; 
+    tmpStorage  : array[10] of char;
+    tmp : ^char;
+    pom : uint8_t;
+    len : uint8_t; 
+    
+begin
+
+// ACTUATOR parser - remove if not used
+    cmd_act     := '+ACT';
+    state_true  := 'true';
+    state_false := 'false';
+    tmp := rsp;
+    
+    memset(@tmpStorage[0], 0, 10);
+    pom := strncmp(@cmd_act[0], tmp, 4);
+    
+    if (0 = pom) then
+    begin
+        len := strlen(pressure6_ref);
+        tmp := tmp + 7;
+        if (0 = strncmp(pressure6_ref, tmp, len)) then
+        begin
+            len := len + 11; 
+            tmp := rsp + len;
+            strcpy(tmpStorage, tmp);
+        end; 
+    end; 
+    if (0 = strncmp(@tmpStorage[0], @state_true[0], 4)) then 
+    begin
+        state := 1; 
+    end; 
+    if (0 = strncmp(@tmpStorage[0], @state_false[0], 5)) then 
+    begin
+        state := 0; 
+    end; 
+    tmp := rsp;
+    mikrobus_logWrite(tmp, _LOG_TEXT);
+end;
+
+procedure cloud_packCmd(cmd : ^char; mid : ^char; _end : ^char);
+var
+    cmd_param : array[10] of char; 
+    mid_param : array[10] of char; 
+    end_param : array[10] of char; 
+    tmpBuf    : array[80] of char;
+begin
+    cmd_param := '="';
+    mid_param := '","';
+    end_param := '"';
+
+    memset(@tmpBuf[0], 0, 50); 
+    strcat(@tmpBuf[0], cmd); 
+    strcat(@tmpBuf[0], @cmd_param[0]); 
+    strcat(@tmpBuf[0], mid); 
+    strcat(@tmpBuf[0], @mid_param[0]); 
+    strcat(@tmpBuf[0], _end);
+    strcat(@tmpBuf[0], @end_param[0]); 
+    cloud_cmdSingle(@tmpBuf[0]); 
+end;
+
+procedure systemInit(); 
+begin
+// Cloud
+    mikrobus_gpioInit(_MIKROBUS1, _MIKROBUS_INT_PIN, _GPIO_INPUT); 
+    mikrobus_gpioInit(_MIKROBUS1, _MIKROBUS_RST_PIN, _GPIO_OUTPUT); 
+    mikrobus_gpioInit(_MIKROBUS1, _MIKROBUS_CS_PIN, _GPIO_OUTPUT); 
+    mikrobus_uartInit(_MIKROBUS1, @_CLOUD_UART_CFG[0]);
+
+    mikrobus_logInit(_LOG_USBUART_A, 9600); 
+end;
+
+procedure applicationInit(); 
+begin
+// TIMER INIT
+    cloud_configTimer(); 
+
+// DRIVER INIT
+    cloud_uartDriverInit(T_CLOUD_P(@_MIKROBUS1_GPIO), T_CLOUD_P(@_MIKROBUS1_UART)); 
+    cloud_coreInit(@cloud_default_handler, 1500);
+    cloud_modulePower(true); 
+
+// MODULE INIT
+    cloud_cmdSingle(@_ATE[0]); 
+    cloud_cmdSingle(@_AT[0]); 
+    cloud_cmdSingle(@_AT_CEN[0]); 
+    cloud_packCmd(@_AT_NWCR[0], @cloud_networkName[0], @cloud_networkPassword[0]); 
+    cloud_cmdSingle(@_AT_NWC[0]); 
+    cloud_packCmd(@_AT_BRCR[0], @cloud_devKey[0], @cloud_devPass[0]); 
+    cloud_cmdSingle(@_AT_BRC[0]); 
+    Delay_ms(3000); 
+    
+    taskTime := 0; 
+end;
+
+procedure applicationTask(); 
+var
+    demoBuffer : array[50] of char; 
+begin
+
+// CORE STATE MACHINE
+    cloud_process(); 
+
+// SENSOR - Remove if not used
+    if (taskTime > 1500) then 
+    begin
+        taskTime := 0; 
+        cloud_packCmd(@_AT_DSET[0], @pressure6_ref[0], @demoBuffer[0]); 
+        cloud_cmdSingle(@_AT_PUB[0]); 
+    end; 
+
+// ACTUATOR - Remove if not used
+    if ((state = 1) and (oldstate = 0)) then 
+    begin
+        oldstate := 1; 
+    end; 
+    if ((state = 0) and (oldstate = 1)) then 
+    begin
+        oldstate := 0; 
+    end;
+     
+end;
+
+begin
+    pressure6_ref   := 'pressure6_PRESSURE6_T';
+    Cloud_networkName     := 'Network_Name';
+    Cloud_networkPassword := 'Network_Password';
+    Cloud_devKey          := 'Device_Key';
+    Cloud_devPass         := 'Device_Password';
+    _ATE                  := 'ATE1';
+    _AT                   := 'AT';
+    _AT_CEN               := 'AT+CEN=1';
+    _AT_NWCR              := 'AT+NWCR';
+    _AT_NWC               := 'AT+NWC=1';
+    _AT_BRCR              := 'AT+BRCR';
+    _AT_BRC               := 'AT+BRC=1';
+    _AT_DSET              := 'AT+DSET';
+    _AT_PUB               := 'AT+PUB';
+
+    systemInit(); 
+    applicationInit(); 
+    while (1) do 
+    begin 
+        applicationTask(); 
+    end;
+end.

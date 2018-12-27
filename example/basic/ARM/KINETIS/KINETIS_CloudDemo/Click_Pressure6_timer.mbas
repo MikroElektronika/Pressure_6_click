@@ -1,0 +1,41 @@
+'
+' Use mikroE Timer Calculator to generate proper timer configuration
+' and timer ISR.
+'
+' https://www.mikroe.com/timer-calculator
+'
+
+module Click_Pressure6_timer
+
+include Click_Pressure6_types
+
+    
+sub procedure cloud_configTimer() 
+
+dim taskTime as uint16_t
+
+implements
+
+sub procedure cloud_configTimer() 
+
+    SIM_SCGC6 = (SIM_SCGC6 or (1 << PIT)) 
+    NVIC_IntEnable(IVT_INT_PIT0) 
+    PIT_MCR = 0x00 
+    PIT_LDVAL0 = 119999 
+    PIT_TCTRL0 = (PIT_TCTRL0 or 2) 
+    PIT_TCTRL0 = (PIT_TCTRL0 or 1) 
+    EnableInterrupts() 
+	
+	taskTime = 0
+
+end sub
+
+sub procedure Timer_interrupt() iv IVT_INT_PIT0
+
+    cloud_tick() 
+	taskTime = taskTime + 1
+    PIT_TFLG0.TIF = 1 
+
+end sub
+
+end.
